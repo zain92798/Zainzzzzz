@@ -12,7 +12,7 @@ app.use(express.json());
 // =============================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const PORT = process.env.PORT || 3000;
-const TOKEN_FILE = path.join('/tmp', 'fcm_token.txt'); // /tmp يبقى أثناء تشغيل السيرفر
+const TOKEN_FILE = path.join('/tmp', 'fcm_token.txt');
 
 if (!TELEGRAM_BOT_TOKEN) {
     console.error('❌ Missing TELEGRAM_BOT_TOKEN environment variable');
@@ -27,6 +27,11 @@ let serviceAccount;
 if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     try {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+
+        // ✅ الإصلاح الجوهري: بعض لوحات الاستضافة تحوّل الأسطر الحقيقية
+        // داخل private_key إلى نص حرفي \n — هذا السطر يعيدها أسطراً حقيقية
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+
         console.log('✅ Firebase credentials loaded from JSON environment variable.');
     } catch (e) {
         console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
@@ -68,7 +73,7 @@ function loadToken() {
     return null;
 }
 
-let fcmToken = loadToken(); // نحمّل التوكن عند بدء التشغيل
+let fcmToken = loadToken();
 if (fcmToken) {
     console.log('✅ FCM Token loaded from file:', fcmToken.substring(0, 20) + '...');
 }
@@ -102,7 +107,6 @@ app.get('/ping', (req, res) => {
 // 6. Webhook لأوامر Telegram
 // =============================================
 app.post('/webhook', async (req, res) => {
-    // نرد فوراً لتيليجرام (يجب أن يصل الرد خلال 5 ثوانٍ)
     res.send('OK');
 
     try {
@@ -133,7 +137,6 @@ app.post('/webhook', async (req, res) => {
                 );
             } catch (fcmError) {
                 console.error('❌ FCM send error:', fcmError.message);
-                // إذا انتهت صلاحية التوكن
                 if (fcmError.code === 'messaging/registration-token-not-registered') {
                     fcmToken = null;
                     saveToken('');
