@@ -1,125 +1,197 @@
+// index.js - النسخة المصححة
 const express = require('express');
 const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
+
 const app = express();
+app.use(express.json());
 
 // =============================================
-// قراءة المفتاح من متغير البيئة (Base64)
+// 1. التحقق من متغيرات البيئة المطلوبة
+// =============================================
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const PORT = process.env.PORT || 3000;
+const TOKEN_FILE = path.join('/tmp', 'fcm_token.txt'); // /tmp يبقى أثناء تشغيل السيرفر
+
+if (!TELEGRAM_BOT_TOKEN) {
+    console.error('❌ Missing TELEGRAM_BOT_TOKEN environment variable');
+    process.exit(1);
+}
+
+// =============================================
+// 2. تهيئة Firebase (JSON مباشر بدون Base64)
 // =============================================
 let serviceAccount;
 
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     try {
-        // الخطوة 1: فك تشفير Base64 إلى نص JSON
-        const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8');
-        // الخطوة 2: تحويل النص إلى كائن JavaScript
-        serviceAccount = JSON.parse(decoded);
-        console.log('✅ Firebase credentials loaded from Base64 environment variable.');
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        console.log('✅ Firebase credentials loaded from JSON environment variable.');
     } catch (e) {
-        console.error('❌ Failed to decode/parse FIREBASE_SERVICE_ACCOUNT:');
-        console.error(e.message);
-        console.error('   Make sure the variable contains a valid Base64-encoded JSON string.');
+        console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
         process.exit(1);
     }
 } else {
-    // احتياطي للمطورين المحليين (استخدام ملف)
     try {
         serviceAccount = require('./service-account-key.json');
         console.log('✅ Using Firebase credentials from local file (fallback).');
     } catch (e) {
-        console.error('❌ No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT env var or add service-account-key.json file.');
+        console.error('❌ No Firebase credentials found.');
         process.exit(1);
     }
 }
 
-// تهيئة Firebase Admin SDK
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
 
-app.use(express.json());
+// =============================================
+// 3. FCM Token — حفظ في ملف لبقائه بعد الريستارت
+// =============================================
+function saveToken(token) {
+    try {
+        fs.writeFileSync(TOKEN_FILE, token, 'utf8');
+    } catch (e) {
+        console.error('⚠️ Could not save token to file:', e.message);
+    }
+}
 
-// تخزين FCM Token في الذاكرة (سيُفقد عند إعادة التشغيل)
-let fcmToken = null;
+function loadToken() {
+    try {
+        if (fs.existsSync(TOKEN_FILE)) {
+            return fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+        }
+    } catch (e) {
+        console.error('⚠️ Could not load token from file:', e.message);
+    }
+    return null;
+}
+
+let fcmToken = loadToken(); // نحمّل التوكن عند بدء التشغيل
+if (fcmToken) {
+    console.log('✅ FCM Token loaded from file:', fcmToken.substring(0, 20) + '...');
+}
 
 // =============================================
-// نقطة نهاية لحفظ التوكن من تطبيق Android
+// 4. حفظ FCM Token من تطبيق Android
 // =============================================
 app.get('/saveToken', (req, res) => {
     const token = req.query.token;
     if (!token) {
-        return res.status(400).send('Missing token');
+        return res.status(400).json({ error: 'Missing token parameter' });
     }
     fcmToken = token;
-    console.log('✅ FCM Token saved:', token);
-    res.send('Token saved');
+    saveToken(token);
+    console.log('✅ FCM Token saved:', token.substring(0, 20) + '...');
+    res.json({ success: true, message: 'Token saved' });
 });
 
 // =============================================
-// نقطة نهاية Webhook لتلقي أوامر Telegram
+// 5. Ping endpoint — يمنع نوم السيرفر على Render
+// =============================================
+app.get('/ping', (req, res) => {
+    res.json({
+        status: 'alive',
+        hasToken: !!fcmToken,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// =============================================
+// 6. Webhook لأوامر Telegram
 // =============================================
 app.post('/webhook', async (req, res) => {
+    // نرد فوراً لتيليجرام (يجب أن يصل الرد خلال 5 ثوانٍ)
+    res.send('OK');
+
     try {
         const message = req.body.message;
-        if (!message || !message.text) {
-            return res.send('OK');
-        }
+        if (!message || !message.text) return;
 
         const chatId = message.chat.id.toString();
         const text = message.text.toLowerCase().trim();
 
-        // الأمر الخاص بالإيقاظ
         if (text === '/wake' || text === '/start' || text === '/ping') {
             if (!fcmToken) {
-                await sendTelegramMessage(chatId, '⚠️ الجهاز غير مسجل. تأكد من فتح التطبيق مرة واحدة.');
-                return res.send('OK');
+                await sendTelegramMessage(chatId,
+                    '⚠️ الجهاز غير مسجل بعد.\n' +
+                    'تأكد من فتح تطبيق المراقبة مرة واحدة على الهاتف الآخر أولاً.'
+                );
+                return;
             }
 
-            // إرسال FCM عالي الأولوية للإيقاظ
-            await admin.messaging().send({
-                token: fcmToken,
-                data: { ping: 'true' },
-                android: {
-                    priority: 'high'
+            try {
+                await admin.messaging().send({
+                    token: fcmToken,
+                    data: { action: 'wake' },
+                    android: { priority: 'high' }
+                });
+                await sendTelegramMessage(chatId,
+                    '✅ تم إيقاظ كاميرا المراقبة!\n' +
+                    'يمكنك الآن استخدام /capture أو /status'
+                );
+            } catch (fcmError) {
+                console.error('❌ FCM send error:', fcmError.message);
+                // إذا انتهت صلاحية التوكن
+                if (fcmError.code === 'messaging/registration-token-not-registered') {
+                    fcmToken = null;
+                    saveToken('');
+                    await sendTelegramMessage(chatId,
+                        '❌ انتهت صلاحية توكن الجهاز.\n' +
+                        'افتح التطبيق على هاتف المراقبة لتجديده.'
+                    );
+                } else {
+                    await sendTelegramMessage(chatId, '❌ فشل إيقاظ الجهاز. تأكد من اتصاله بالإنترنت.');
                 }
-            });
+            }
 
-            await sendTelegramMessage(chatId, '⏰ تم إيقاظ التطبيق! يمكنك الآن استخدام الأوامر العادية (/capture, /status).');
+        } else if (text === '/status') {
+            const status = fcmToken
+                ? '🟢 كاميرا المراقبة مسجلة وجاهزة\nاستخدم /wake لإيقاظها'
+                : '🔴 كاميرا المراقبة غير مسجلة\nافتح التطبيق على الهاتف الآخر أولاً';
+            await sendTelegramMessage(chatId, status);
+
         } else {
-            // أي أمر آخر، نرد برسالة توجيهية
-            await sendTelegramMessage(chatId, '📟 استخدم /wake لإيقاظ التطبيق إذا كان متوقفاً.');
+            await sendTelegramMessage(chatId,
+                '📋 الأوامر المتاحة:\n' +
+                '/wake — إيقاظ كاميرا المراقبة\n' +
+                '/status — حالة الجهاز\n' +
+                '/capture — التقاط صورة'
+            );
         }
 
-        res.send('OK');
     } catch (error) {
-        console.error('❌ Webhook error:', error);
-        res.status(500).send('Error');
+        console.error('❌ Webhook processing error:', error);
     }
 });
 
 // =============================================
-// دالة مساعدة لإرسال رسائل إلى Telegram
+// 7. دالة إرسال رسائل Telegram
 // =============================================
 async function sendTelegramMessage(chatId, text) {
-    const BOT_TOKEN = '8902913433:AAEjgK8UvQYlVlygLkgsiCPeee4LmqYdhT0';
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     try {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, text: text })
         });
-
         if (!response.ok) {
-            console.error('Telegram API error:', await response.text());
+            const errText = await response.text();
+            console.error('❌ Telegram API error:', errText);
         }
     } catch (e) {
-        console.error('Failed to send Telegram message:', e);
+        console.error('❌ Failed to send Telegram message:', e.message);
     }
 }
 
 // =============================================
-// تشغيل الخادم
+// 8. تشغيل السيرفر
 // =============================================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`📡 Webhook ready at /webhook`);
+    console.log(`🔔 Token endpoint ready at /saveToken`);
+    console.log(`🏓 Ping endpoint ready at /ping`);
+});
