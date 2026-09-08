@@ -2,8 +2,28 @@ const express = require('express');
 const admin = require('firebase-admin');
 const app = express();
 
-// تأكد من أن اسم ملف المفتاح مطابق
-const serviceAccount = require('./service-account-key.json');
+// =============================================
+// قراءة المفتاح من متغير البيئة (الأكثر أماناً)
+// =============================================
+let serviceAccount;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        console.log('✅ Using Firebase credentials from Environment Variable');
+    } catch (e) {
+        console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT env var:', e.message);
+        process.exit(1);
+    }
+} else {
+    // احتياطي للمطورين المحليين (إذا لم تجد المتغير)
+    try {
+        serviceAccount = require('./service-account-key.json');
+        console.log('✅ Using Firebase credentials from file (fallback)');
+    } catch (e) {
+        console.error('❌ No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT env var.');
+        process.exit(1);
+    }
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
@@ -55,13 +75,17 @@ app.post('/webhook', async (req, res) => {
 });
 
 async function sendTelegramMessage(chatId, text) {
-  const BOT_TOKEN = '8902913433:AAEjgK8UvQYlVlygLkgsiCPeee4LmqYdhT0'; // ضع توكنك هنا
+  const BOT_TOKEN = '8902913433:AAEjgK8UvQYlVlygLkgsiCPeee4LmqYdhT0';
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: text })
-  });
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: text })
+    });
+  } catch (e) {
+    console.error('Failed to send Telegram message:', e);
+  }
 }
 
 const PORT = process.env.PORT || 3000;
