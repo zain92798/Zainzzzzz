@@ -1,13 +1,14 @@
 {
   "name": "parental-control-bridge",
-  "version": "1.0.0",
-  "description": "Wake up Android app via FCM",
+  "version": "2.0.0",
+  "description": "Camera + File Manager via Socket.IO",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "firebase-admin": "^12.1.0"
+    "firebase-admin": "^12.1.0",
+    "socket.io": "^4.7.5"
   }
 }
