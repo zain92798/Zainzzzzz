@@ -1,4 +1,4 @@
-cat > /mnt/user-data/outputs/parental-control/index.js << 'ENDOFFILE'
+
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║        index.js — سيرفر كاميرا المراقبة + مدير الملفات          ║
 // ╚══════════════════════════════════════════════════════════════════╝
@@ -702,5 +702,4 @@ app.listen(PORT, async () => {
     console.log('🔄 Activating webhook on startup...');
     await reactivateWebhook();
 });
-ENDOFFILE
-echo "Done index.js"
+
