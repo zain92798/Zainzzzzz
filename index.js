@@ -189,10 +189,19 @@ io.on('connection', (socket) => {
     });
 
     // ─── Heartbeat من Android ───
-    socket.on('android:heartbeat', (data) => {
-        lastHeartbeat = Date.now();
-        socket.emit('android:heartbeat-ack', { t: Date.now() });
-    });
+    // ─── Heartbeat من Android ───
+// ✅ إصلاح مهم: حذف Webhook عند كل heartbeat لمنع التعارض مع Polling
+socket.on('android:heartbeat', async (data) => {
+    lastHeartbeat = Date.now();
+    
+    // إذا كان Webhook نشطاً بالخطأ، احذفه فوراً
+    if (webhookActive) {
+        console.log('💓 [HEARTBEAT] App alive — deleting stale webhook...');
+        await deleteWebhook();
+    }
+    
+    socket.emit('android:heartbeat-ack', { t: Date.now() });
+});
 
     // ─── قائمة الملفات من Android ───
     socket.on('android:list-result', (data) => {
